@@ -5,48 +5,24 @@
 #include <math.h>
 #include <tusb-hid.h>
 #include "class/hid/hid_device.h"
+#include "Config.h"
 
 // Faster polling makes replay/recenter complete sooner.
 int usb_hid_poll_interval = 1;
 
 static const uint8_t hidReportDesc[] = {
-  TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(1)),
-  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(2))
+  TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(Config::KEYBOARD_REPORT_ID)),
+  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(Config::MOUSE_REPORT_ID))
 };
 
 uint8_t hidLocalId = 0;
-const uint8_t KEYBOARD_REPORT_ID = 1;
-const uint8_t MOUSE_REPORT_ID = 2;
-
-const uint8_t MOUSE_MIDDLE_BUTTON = 0x04;
-
-const uint8_t TLV493D_ADDR = 0x5E;
-const unsigned long SERIAL_WAIT_MS = 1000;
-
 Tlv493d mag = Tlv493d();
 
-const uint8_t HOME_BUTTON_PIN = 27;
-const unsigned long BUTTON_DEBOUNCE_MS = 25;
 bool homeLastReading = HIGH;
 bool homeStableState = HIGH;
 unsigned long homeLastChangeMs = 0;
-
-const int calSamples = 300;
-const int CAL_MAX_ATTEMPTS = calSamples * 5;
-const int sensivity = 8;
-const int magRange = 3;
-const int outRange = 64;
-const int inRange = magRange * sensivity;
-
-const float alpha = 0.18;
-const float xyThreshold = 1.0;
-const float responseRange = 10.0;
-const float speedCurveBase = 0.55;
-const int minReportMagnitude = 2;
-
-const unsigned long IDLE_RELEASE_INTERVAL_MS = 250;
-const unsigned long MAX_CONTINUOUS_DRAG_MS = 3500;
-const unsigned long DRAG_COOLDOWN_MS = 120;
+unsigned long homePressStartMs = 0;
+bool homePressHandled = false;
 
 uint8_t mouseButtons = 0;
 
@@ -56,9 +32,6 @@ unsigned long lastMovementMs = 0;
 unsigned long dragStartMs = 0;
 unsigned long lastIdleReleaseMs = 0;
 unsigned long dragCooldownUntilMs = 0;
-const unsigned long RECENTER_IDLE_MS = 120;
-const uint16_t DRAG_HISTORY_SIZE = 384;
-const uint16_t MAX_REPLAY_SAMPLES_PER_CALL = DRAG_HISTORY_SIZE;
 
 struct DragSample
 {
@@ -66,7 +39,7 @@ struct DragSample
   int8_t y;
 };
 
-DragSample dragHistory[DRAG_HISTORY_SIZE];
+DragSample dragHistory[Config::DRAG_HISTORY_SIZE];
 uint16_t dragHistoryCount = 0;
 uint16_t dragHistoryStart = 0;
 
@@ -83,14 +56,53 @@ float yCurrent = 0.0;
 float zCurrent = 0.0;
 
 bool isOrbit = false;
+bool calibrationValid = false;
 unsigned long lastDebugMs = 0;
 unsigned long lastSensorErrorMs = 0;
+
+enum class DeviceState
+{
+  Calibrating,
+  Idle,
+  Orbiting,
+  Recentering,
+  Cooldown,
+  SensorError
+};
+
+DeviceState deviceState = DeviceState::Idle;
+
+void setDeviceState(DeviceState state)
+{
+  deviceState = state;
+}
+
+const char *deviceStateName(DeviceState state)
+{
+  switch (state)
+  {
+    case DeviceState::Calibrating:
+      return "calibrating";
+    case DeviceState::Idle:
+      return "idle";
+    case DeviceState::Orbiting:
+      return "orbiting";
+    case DeviceState::Recentering:
+      return "recentering";
+    case DeviceState::Cooldown:
+      return "cooldown";
+    case DeviceState::SensorError:
+      return "sensor-error";
+  }
+
+  return "unknown";
+}
 
 void setup()
 {
   Serial.begin(115200);
   unsigned long serialStart = millis();
-  while (!Serial && millis() - serialStart < SERIAL_WAIT_MS)
+  while (!Serial && millis() - serialStart < Config::SERIAL_WAIT_MS)
   {
     delay(10);
   }
@@ -99,8 +111,8 @@ void setup()
 
   beginHid();
 
-  pinMode(HOME_BUTTON_PIN, INPUT_PULLUP);
-  homeLastReading = digitalRead(HOME_BUTTON_PIN);
+  pinMode(Config::HOME_BUTTON_PIN, INPUT_PULLUP);
+  homeLastReading = digitalRead(Config::HOME_BUTTON_PIN);
   homeStableState = homeLastReading;
   homeLastChangeMs = millis();
   Serial.println("home button pin=27");
@@ -133,11 +145,15 @@ void setup()
   dumpRawTlv("raw");
 
   printPreCalibrationSamples();
-  calibrateSensor();
+  bool calibrated = calibrateSensor();
 
   releaseKeyboard();
   mouseButtons = 0;
   sendMouseReport(0, 0, 0, 0);
+  if (calibrated)
+  {
+    setDeviceState(DeviceState::Idle);
+  }
   Serial.println("hid ready");
 
 
@@ -146,6 +162,11 @@ void setup()
 void loop()
 {
   handleHomeButton();
+  unsigned long now = millis();
+  if (deviceState == DeviceState::Cooldown && now >= dragCooldownUntilMs)
+  {
+    setDeviceState(DeviceState::Idle);
+  }
 
   delay(mag.getMeasurementDelay());
   handleHomeButton();
@@ -154,6 +175,17 @@ void loop()
   if (err != TLV493D_NO_ERROR)
   {
     printSensorError(err);
+    setDeviceState(DeviceState::SensorError);
+    releaseMotionOnly();
+    releaseShift();
+    clearDragHistory();
+    recenterActive = false;
+    return;
+  }
+
+  if (!calibrationValid)
+  {
+    setDeviceState(DeviceState::SensorError);
     releaseMotionOnly();
     releaseShift();
     clearDragHistory();
@@ -168,9 +200,13 @@ void loop()
   int xOut = 0;
   int yOut = 0;
   bool sentMovement = false;
-  unsigned long now = millis();
 
-  if (now >= dragCooldownUntilMs && (fabs(xCurrent) > xyThreshold || fabs(yCurrent) > xyThreshold))
+  if (deviceState == DeviceState::SensorError)
+  {
+    setDeviceState(DeviceState::Idle);
+  }
+
+  if (now >= dragCooldownUntilMs && (fabs(xCurrent) > Config::XY_THRESHOLD || fabs(yCurrent) > Config::XY_THRESHOLD))
   {
     if (recenterActive)
     {
@@ -202,12 +238,13 @@ void loop()
 
       if (!movementActive)
       {
-        mouseButtons = MOUSE_MIDDLE_BUTTON;
+        mouseButtons = Config::MOUSE_MIDDLE_BUTTON;
         movementActive = true;
         dragStartMs = now;
+        setDeviceState(DeviceState::Orbiting);
       }
 
-      if (movementActive && now - dragStartMs >= MAX_CONTINUOUS_DRAG_MS)
+      if (movementActive && now - dragStartMs >= Config::MAX_CONTINUOUS_DRAG_MS)
       {
         breakMotionLatch();
       }
@@ -225,7 +262,7 @@ void loop()
     }
   }
 
-  if (!sentMovement && now - lastMovementMs >= RECENTER_IDLE_MS)
+  if (!sentMovement && now - lastMovementMs >= Config::RECENTER_IDLE_MS)
   {
     if (movementActive)
     {
@@ -233,6 +270,7 @@ void loop()
     }
     else if (recenterActive)
     {
+      setDeviceState(DeviceState::Recentering);
       replayRecenter();
     }
   }
@@ -240,6 +278,10 @@ void loop()
   if (!sentMovement)
   {
     sendIdleReleaseIfNeeded();
+    if (!movementActive && !recenterActive && now >= dragCooldownUntilMs && deviceState != DeviceState::SensorError)
+    {
+      setDeviceState(DeviceState::Idle);
+    }
   }
 
   printDebug(xMove, yMove, xOut, yOut);
@@ -256,7 +298,7 @@ void printHexByte(uint8_t value)
 
 void dumpRawTlv(const char *label)
 {
-  uint8_t n = Wire1.requestFrom(TLV493D_ADDR, (uint8_t)10);
+  uint8_t n = Wire1.requestFrom(Config::TLV493D_ADDR, (uint8_t)10);
 
   Serial.print(label);
   Serial.print(" n=");
@@ -302,17 +344,20 @@ void printPreCalibrationSamples()
   }
 }
 
-void calibrateSensor()
+bool calibrateSensor()
 {
+  DeviceState previousState = deviceState;
+  setDeviceState(DeviceState::Calibrating);
   Serial.println("calibrating");
 
+  calibrationValid = false;
   xOffset = 0.0;
   yOffset = 0.0;
   zOffset = 0.0;
 
   int validSamples = 0;
   int attempts = 0;
-  while (validSamples < calSamples && attempts < CAL_MAX_ATTEMPTS)
+  while (validSamples < Config::CAL_SAMPLES && attempts < Config::CAL_MAX_ATTEMPTS)
   {
     attempts++;
     delay(mag.getMeasurementDelay());
@@ -332,14 +377,15 @@ void calibrateSensor()
   if (validSamples == 0)
   {
     Serial.println("calibration failed");
-    return;
+    setDeviceState(DeviceState::SensorError);
+    return false;
   }
 
   xOffset /= validSamples;
   yOffset /= validSamples;
   zOffset /= validSamples;
 
-  if (validSamples < calSamples)
+  if (validSamples < Config::CAL_SAMPLES)
   {
     Serial.print("cal samples=");
     Serial.println(validSamples);
@@ -351,6 +397,16 @@ void calibrateSensor()
   Serial.print(yOffset, 4);
   Serial.print(",");
   Serial.println(zOffset, 4);
+  calibrationValid = true;
+  setDeviceState(previousState);
+  return true;
+}
+
+void resetFilters()
+{
+  xCurrent = 0.0;
+  yCurrent = 0.0;
+  zCurrent = 0.0;
 }
 
 Tlv493d_Error_t updateSensor()
@@ -376,28 +432,28 @@ void applyFilter()
 
 float filterAxis(float current, float value)
 {
-  return current + alpha * (value - current);
+  return current + Config::ALPHA * (value - current);
 }
 
 int scaleAxis(float value)
 {
-  if (fabs(value) <= xyThreshold)
+  if (fabs(value) <= Config::XY_THRESHOLD)
   {
     return 0;
   }
 
   // The response curve keeps the center calm but adds speed as deflection increases.
-  float magnitude = fabs(value) - xyThreshold;
-  float normalized = constrain(magnitude / responseRange, 0.0, 1.0);
-  float curved = normalized * (speedCurveBase + (1.0 - speedCurveBase) * normalized);
-  int output = (int)lround(curved * outRange);
+  float magnitude = fabs(value) - Config::XY_THRESHOLD;
+  float normalized = constrain(magnitude / Config::RESPONSE_RANGE, 0.0, 1.0);
+  float curved = normalized * (Config::SPEED_CURVE_BASE + (1.0 - Config::SPEED_CURVE_BASE) * normalized);
+  int output = (int)lround(curved * Config::OUT_RANGE);
 
-  if (output < minReportMagnitude)
+  if (output < Config::MIN_REPORT_MAGNITUDE)
   {
     return 0;
   }
 
-  output = constrain(output, -outRange, outRange);
+  output = constrain(output, -Config::OUT_RANGE, Config::OUT_RANGE);
   return value < 0 ? -output : output;
 }
 
@@ -428,7 +484,7 @@ void sendIdleReleaseIfNeeded()
   }
 
   unsigned long now = millis();
-  if (now - lastIdleReleaseMs < IDLE_RELEASE_INTERVAL_MS)
+  if (now - lastIdleReleaseMs < Config::IDLE_RELEASE_INTERVAL_MS)
   {
     return;
   }
@@ -447,7 +503,8 @@ void breakMotionLatch()
   clearDragHistory();
   recenterActive = false;
   dragStartMs = 0;
-  dragCooldownUntilMs = millis() + DRAG_COOLDOWN_MS;
+  dragCooldownUntilMs = millis() + Config::DRAG_COOLDOWN_MS;
+  setDeviceState(DeviceState::Cooldown);
   Serial.println("watchdog release");
 }
 
@@ -464,11 +521,11 @@ void recordDragSample(int8_t x, int8_t y)
     return;
   }
 
-  uint16_t index = (dragHistoryStart + dragHistoryCount) % DRAG_HISTORY_SIZE;
-  if (dragHistoryCount == DRAG_HISTORY_SIZE)
+  uint16_t index = (dragHistoryStart + dragHistoryCount) % Config::DRAG_HISTORY_SIZE;
+  if (dragHistoryCount == Config::DRAG_HISTORY_SIZE)
   {
-    dragHistoryStart = (dragHistoryStart + 1) % DRAG_HISTORY_SIZE;
-    index = (dragHistoryStart + dragHistoryCount - 1) % DRAG_HISTORY_SIZE;
+    dragHistoryStart = (dragHistoryStart + 1) % Config::DRAG_HISTORY_SIZE;
+    index = (dragHistoryStart + dragHistoryCount - 1) % Config::DRAG_HISTORY_SIZE;
   }
   else
   {
@@ -494,9 +551,9 @@ void replayRecenter()
 
   // Replaying recorded small deltas is used because summed drift chunks are distorted by pointer acceleration.
   uint16_t samples = 0;
-  while (dragHistoryCount > 0 && samples < MAX_REPLAY_SAMPLES_PER_CALL)
+  while (dragHistoryCount > 0 && samples < Config::MAX_REPLAY_SAMPLES_PER_CALL)
   {
-    uint16_t index = (dragHistoryStart + dragHistoryCount - 1) % DRAG_HISTORY_SIZE;
+    uint16_t index = (dragHistoryStart + dragHistoryCount - 1) % Config::DRAG_HISTORY_SIZE;
     DragSample sample = dragHistory[index];
     dragHistoryCount--;
 
@@ -542,7 +599,7 @@ void sendKeyboardReport(uint8_t modifiers, uint8_t keys[6])
   tud_task();
   if (USB.HIDReady())
   {
-    tud_hid_keyboard_report(KEYBOARD_REPORT_ID, modifiers, keys);
+    tud_hid_keyboard_report(Config::KEYBOARD_REPORT_ID, modifiers, keys);
   }
   tud_task();
 }
@@ -553,7 +610,7 @@ void sendMouseReport(int8_t x, int8_t y, int8_t wheel, int8_t pan)
   tud_task();
   if (USB.HIDReady())
   {
-    tud_hid_mouse_report(MOUSE_REPORT_ID, mouseButtons, x, y, wheel, pan);
+    tud_hid_mouse_report(Config::MOUSE_REPORT_ID, mouseButtons, x, y, wheel, pan);
   }
   tud_task();
 }
@@ -609,13 +666,15 @@ void printDebug(int xMove, int yMove, int xOut, int yOut)
   Serial.print(recenterActive ? 1 : 0);
   Serial.print(" active=");
   Serial.print(movementActive ? 1 : 0);
+  Serial.print(" state=");
+  Serial.print(deviceStateName(deviceState));
   Serial.println(" mode=fusion-spacemouse");
 }
 
 void handleHomeButton()
 {
   // Raw edge handling is used because the second button line is stuck low on this build.
-  bool reading = digitalRead(HOME_BUTTON_PIN);
+  bool reading = digitalRead(Config::HOME_BUTTON_PIN);
   unsigned long now = millis();
 
   if (reading != homeLastReading)
@@ -624,16 +683,53 @@ void handleHomeButton()
     homeLastChangeMs = now;
   }
 
-  if (now - homeLastChangeMs < BUTTON_DEBOUNCE_MS || reading == homeStableState)
+  if (now - homeLastChangeMs < Config::BUTTON_DEBOUNCE_MS)
   {
     return;
   }
 
-  homeStableState = reading;
-  if (homeStableState == LOW)
+  if (reading != homeStableState)
   {
-    goHome();
+    homeStableState = reading;
+    if (homeStableState == LOW)
+    {
+      homePressStartMs = now;
+      homePressHandled = false;
+    }
+    else if (!homePressHandled)
+    {
+      goHome();
+    }
+    return;
   }
+
+  if (homeStableState == LOW && !homePressHandled && now - homePressStartMs >= Config::HOME_LONG_PRESS_MS)
+  {
+    homePressHandled = true;
+    recalibrateHomePosition();
+  }
+}
+
+void recalibrateHomePosition()
+{
+  Serial.println("recalibrating by button hold");
+  releaseMotionOnly();
+  releaseShift();
+  clearDragHistory();
+  recenterActive = false;
+  dragStartMs = 0;
+  dragCooldownUntilMs = millis() + Config::DRAG_COOLDOWN_MS;
+  setDeviceState(DeviceState::Cooldown);
+  if (!calibrateSensor())
+  {
+    resetFilters();
+    lastMovementMs = millis();
+    return;
+  }
+  resetFilters();
+  lastMovementMs = millis();
+  dragCooldownUntilMs = millis() + Config::DRAG_COOLDOWN_MS;
+  setDeviceState(DeviceState::Cooldown);
 }
 
 void goHome()
@@ -643,7 +739,8 @@ void goHome()
   clearDragHistory();
   recenterActive = false;
   dragStartMs = 0;
-  dragCooldownUntilMs = millis() + DRAG_COOLDOWN_MS;
+  dragCooldownUntilMs = millis() + Config::DRAG_COOLDOWN_MS;
+  setDeviceState(DeviceState::Cooldown);
 
   // Fusion AddIn handles Cmd+Shift+N as the home-view command.
   uint8_t keys[6] = { HID_KEY_N, 0, 0, 0, 0, 0 };

@@ -8,9 +8,21 @@ DIY SpaceMouse-подобный контроллер для Autodesk Fusion 360.
 
 - Отклонение ручки — орбита модели в Fusion 360.
 - Отпускание ручки — быстрый replay/recenter курсора.
-- Кнопка на GPIO27 — команда Home View через Fusion AddIn.
+- Короткое нажатие кнопки на GPIO27 — команда Home View через Fusion AddIn.
+- Удержание кнопки на GPIO27 — повторная калибровка нейтрального положения.
 - Защита от «залипания»: прошивка периодически отпускает Shift/MMB и имеет watchdog для длинного drag.
 - Z-ось сейчас не используется для навигации: pan/zoom отключены ради предсказуемой орбиты.
+
+## Документация
+
+- [Настройка прошивки](Code/firmware/README.md)
+- [Прошивка](docs/flashing.md)
+- [Подключение](docs/wiring.md)
+- [Сборка](docs/assembly.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Пояснения к BOM](BOM/README.md)
+
+Текущие элементы управления, параметры чувствительности и ограничения прошивки см. также в [`Code/firmware/README.md`](Code/firmware/README.md).
 
 ## Запчасти
 
@@ -37,7 +49,7 @@ DIY SpaceMouse-подобный контроллер для Autodesk Fusion 360.
 
 ## Важное про плату RP2040
 
-Текущая прошивка в репозитории настроена и проверена на **Adafruit QT Py RP2040**:
+BOM содержит локальную ссылку на Raspberry Pi Pico, но текущая прошивка в репозитории настроена и проверена на **Adafruit QT Py RP2040**:
 
 ```text
 rp2040:rp2040:adafruit_qtpy:usbstack=picosdk
@@ -85,7 +97,7 @@ Code/firmware/firmware.ino
 
 ## Fusion 360 AddIn для Home View
 
-Прошивка отправляет `Cmd+Shift+N` при нажатии кнопки на GPIO27. Чтобы это работало в Fusion 360:
+Прошивка отправляет `Cmd+Shift+N` при коротком нажатии кнопки на GPIO27. Удержание этой же кнопки запускает повторную калибровку нейтрального положения. Чтобы Home View работал в Fusion 360:
 
 1. Скопируйте `Code/Fusion360 Add-in/Send Home` в папку Fusion 360 AddIns.
 2. Запустите AddIn в Fusion 360.
@@ -104,6 +116,7 @@ Code/firmware/                   финальная прошивка
 Code/Fusion360 Add-in/Send Home/ Fusion 360 AddIn для Home View
 BOM/                             список деталей
 CAD/                             STEP/STL файлы
+docs/                            прошивка, подключение, сборка, диагностика
 Images/                          изображения проекта
 Resources/                       схема подключения
 tools/flash_monitor.py           helper для прошивки и serial monitor

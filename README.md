@@ -15,6 +15,8 @@ A DIY magnetic SpaceMouse-style controller for Autodesk Fusion 360 on macOS. It 
 
 GPIO24 is intentionally unused; on this build it was observed stuck LOW.
 
+The BOM contains a local Raspberry Pi Pico source link, but the tested firmware target is Adafruit QT Py RP2040. A Pico is not a drop-in replacement without checking pinout, I2C bus, GPIOs, and FQBN.
+
 ## Limitation
 
 Fusion 360 on macOS did not accept raw native SpaceMouse HID reports without 3DxWare/navlib. This firmware therefore uses a standalone USB HID mouse/keyboard fallback instead of Arduino `Mouse.h`, `Keyboard.h`, or TinyUSB helper libraries.
@@ -23,7 +25,8 @@ Fusion 360 on macOS did not accept raw native SpaceMouse HID reports without 3Dx
 
 - Cap deflection: orbit via Shift + middle mouse button mouse emulation
 - Release: cursor replay/recenter after orbit movement
-- GPIO27 button: sends Cmd+Shift+N, handled by the included Fusion 360 AddIn to go home
+- GPIO27 short press: sends Cmd+Shift+N, handled by the included Fusion 360 AddIn to go home
+- GPIO27 long press: recalibrates the neutral magnetic position
 
 The firmware keeps Y inverted for Fusion orbit behavior, applies a nonlinear safe curve, and includes anti-stuck release heartbeat/watchdog logic.
 
@@ -31,7 +34,22 @@ The firmware keeps Y inverted for Fusion orbit behavior, applies a nonlinear saf
 
 Copy `Code/Fusion360 Add-in/Send Home` into your Fusion 360 AddIns folder. Run the AddIn and bind its command to `Cmd+Shift+N`, which is what the firmware sends from the GPIO27 button. The AddIn command calls `activeViewport.goHome(True)`.
 
+## Documentation
+
+- [Firmware tuning](Code/firmware/README.md)
+- [Flashing firmware](docs/flashing.md)
+- [Wiring](docs/wiring.md)
+- [Assembly notes](docs/assembly.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [BOM notes](BOM/README.md)
+
+## Mechanical caveat
+
+The model was designed around M2.5 inserts and screws, but some insert holes in the tested prints were oversized. M3 inserts and matching M3 screws were needed in those places. Test-fit inserts before final assembly.
+
 ## Build and upload
+
+See [docs/flashing.md](docs/flashing.md) for setup, BOOTSEL, board detection, flashing, and monitoring notes.
 
 Compile:
 
@@ -53,6 +71,7 @@ Code/Fusion360 Add-in/Send Home/ Fusion 360 AddIn for Home view command
 tools/flash_monitor.py           Upload and serial monitor helper
 BOM/                             Bill of materials
 CAD/                             CAD files
+docs/                            Flashing, wiring, assembly, and troubleshooting notes
 Images/                          Project images
 Resources/                       Additional project resources
 ```

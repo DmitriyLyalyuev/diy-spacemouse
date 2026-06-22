@@ -1,84 +1,92 @@
 import adsk.core, adsk.fusion, adsk.cam, traceback
 import os
 
+COMMAND_ID = 'HomeViewButton'
+COMMAND_NAME = 'Send To Home View'
+COMMAND_DESCRIPTION = 'Send the active viewport to the default Home View. Bind this command to Cmd+Shift+N.'
+PANEL_ID = 'SolidScriptsAddinsPanel'
+RESOURCES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', '')
+
 # Global list to keep all event handlers in scope.
 # This is only needed with Python.
 handlers = []
+
 
 def run(context):
     ui = None
     try:
         app = adsk.core.Application.get()
-        ui  = app.userInterface
+        ui = app.userInterface
 
-        # Get the CommandDefinitions collection.
-        cmdDefs = ui.commandDefinitions
-        
-        # Create a button command definition.
-        buttonSample = cmdDefs.addButtonDefinition('HomeViewButton', 
-                                                   'Send To Home View', 
-                                                   'Bind a keyboard shortcut to this command to send the viewport to the default Home View',
-                                                   os.path.join(os.path.dirname(os.path.abspath(__file__)), 'resources', ''))
-        
-        # Connect to the command created event.
-        sampleCommandCreated = SampleCommandCreatedEventHandler()
-        buttonSample.commandCreated.add(sampleCommandCreated)
-        handlers.append(sampleCommandCreated)
-        
-        # Get the ADD-INS panel in the model workspace. 
-        addInsPanel = ui.allToolbarPanels.itemById('SolidScriptsAddinsPanel')
-        
-        # Add the button to the bottom of the panel.
-        buttonControl = addInsPanel.controls.addCommand(buttonSample)
+        cmd_defs = ui.commandDefinitions
+
+        home_view_button = cmd_defs.addButtonDefinition(
+            COMMAND_ID,
+            COMMAND_NAME,
+            COMMAND_DESCRIPTION,
+            RESOURCES_DIR
+        )
+
+        home_view_command_created = HomeViewCommandCreatedHandler()
+        home_view_button.commandCreated.add(home_view_command_created)
+        handlers.append(home_view_command_created)
+
+        addins_panel = ui.allToolbarPanels.itemById(PANEL_ID)
+        if addins_panel:
+            addins_panel.controls.addCommand(home_view_button)
+        else:
+            ui.messageBox(
+                'Send Home command was created, but the ADD-INS toolbar panel was not found. '
+                'You can still assign a keyboard shortcut from Fusion 360 command settings.'
+            )
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
 
 # Event handler for the commandCreated event.
-class SampleCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
+class HomeViewCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
     def __init__(self):
         super().__init__()
+
     def notify(self, args):
-        eventArgs = adsk.core.CommandCreatedEventArgs.cast(args)
-        cmd = eventArgs.command
+        event_args = adsk.core.CommandCreatedEventArgs.cast(args)
+        cmd = event_args.command
 
         # Connect to the execute event.
-        onExecute = SampleCommandExecuteHandler()
-        cmd.execute.add(onExecute)
-        handlers.append(onExecute)
+        on_execute = HomeViewCommandExecuteHandler()
+        cmd.execute.add(on_execute)
+        handlers.append(on_execute)
 
 
 # Event handler for the execute event.
-class SampleCommandExecuteHandler(adsk.core.CommandEventHandler):
+class HomeViewCommandExecuteHandler(adsk.core.CommandEventHandler):
     def __init__(self):
         super().__init__()
-    def notify(self, args):
-        eventArgs = adsk.core.CommandEventArgs.cast(args)
 
-        # Code to react to the event.
+    def notify(self, args):
         app = adsk.core.Application.get()
-        
+
         vp: adsk.core.Viewport = app.activeViewport
         vp.goHome(True)
         vp.refresh()
 
 
-
 def stop(context):
+    ui = None
     try:
         app = adsk.core.Application.get()
-        ui  = app.userInterface
-        
-        # Clean up the UI.
-        cmdDef = ui.commandDefinitions.itemById('HomeViewButton')
-        if cmdDef:
-            cmdDef.deleteMe()
-            
-        addinsPanel = ui.allToolbarPanels.itemById('SolidScriptsAddinsPanel')
-        cntrl = addinsPanel.controls.itemById('HomeViewButton')
-        if cntrl:
-            cntrl.deleteMe()
+        ui = app.userInterface
+
+        cmd_def = ui.commandDefinitions.itemById(COMMAND_ID)
+        if cmd_def:
+            cmd_def.deleteMe()
+
+        addins_panel = ui.allToolbarPanels.itemById(PANEL_ID)
+        if addins_panel:
+            cntrl = addins_panel.controls.itemById(COMMAND_ID)
+            if cntrl:
+                cntrl.deleteMe()
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
