@@ -3,6 +3,7 @@
 #include <Wire.h>
 #include <Tlv493d.h>
 #include <math.h>
+#include <hardware/watchdog.h>
 #include <tusb-hid.h>
 #include "class/hid/hid_device.h"
 #include "Config.h"
@@ -32,6 +33,7 @@ unsigned long lastMovementMs = 0;
 unsigned long dragStartMs = 0;
 unsigned long lastIdleReleaseMs = 0;
 unsigned long dragCooldownUntilMs = 0;
+bool maintenanceRebootDone = false;
 
 struct DragSample
 {
@@ -285,6 +287,53 @@ void loop()
   }
 
   printDebug(xMove, yMove, xOut, yOut);
+  checkMaintenanceReboot(now);
+}
+
+void checkMaintenanceReboot(unsigned long now)
+{
+  if (maintenanceRebootDone)
+  {
+    return;
+  }
+
+  if (now < Config::MAINTENANCE_REBOOT_INTERVAL_MS)
+  {
+    return;
+  }
+
+  if (now - lastMovementMs < Config::MAINTENANCE_REBOOT_IDLE_MS)
+  {
+    return;
+  }
+
+  if (deviceState != DeviceState::Idle)
+  {
+    return;
+  }
+
+  if (movementActive || recenterActive || homeStableState != HIGH || digitalRead(Config::HOME_BUTTON_PIN) != HIGH)
+  {
+    return;
+  }
+
+  maintenanceRebootDone = true;
+  releaseMotionOnly();
+  releaseShift();
+  clearDragHistory();
+  recenterActive = false;
+  dragStartMs = 0;
+  mouseButtons = 0;
+  sendMouseReport(0, 0, 0, 0);
+  Serial.println("maintenance reboot");
+  Serial.flush();
+  delay(Config::MAINTENANCE_REBOOT_DELAY_MS);
+  watchdog_reboot(0, 0, 0);
+  watchdog_enable(100, false);
+  while (true)
+  {
+    delay(1);
+  }
 }
 
 void printHexByte(uint8_t value)

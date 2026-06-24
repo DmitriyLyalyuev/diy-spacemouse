@@ -26,6 +26,9 @@ constexpr float SPEED_CURVE_BASE = 0.55;
 constexpr int MIN_REPORT_MAGNITUDE = 2;
 
 constexpr unsigned long IDLE_RELEASE_INTERVAL_MS = 250;
+constexpr unsigned long MAINTENANCE_REBOOT_INTERVAL_MS = 50UL * 60UL * 1000UL;
+constexpr unsigned long MAINTENANCE_REBOOT_IDLE_MS = 5000;
+constexpr unsigned long MAINTENANCE_REBOOT_DELAY_MS = 50;
 constexpr unsigned long MAX_CONTINUOUS_DRAG_MS = 3500;
 constexpr unsigned long DRAG_COOLDOWN_MS = 120;
 constexpr unsigned long RECENTER_IDLE_MS = 120;
