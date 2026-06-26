@@ -29,6 +29,9 @@ All main constants live in `Config.h`.
 | `SPEED_CURVE_BASE` | Safe curve base speed. Lower makes the center calmer. |
 | `MIN_REPORT_MAGNITUDE` | Coarse deadzone after scaling. |
 | `IDLE_RELEASE_INTERVAL_MS` | Heartbeat interval for releasing stuck Shift/MMB while idle. |
+| `MAINTENANCE_REBOOT_INTERVAL_MS` | Periodic maintenance reboot interval. |
+| `MAINTENANCE_REBOOT_IDLE_MS` | Required idle time before maintenance reboot. |
+| `MAINTENANCE_REBOOT_DELAY_MS` | Delay after USB detach before maintenance reboot. |
 | `MAX_CONTINUOUS_DRAG_MS` | Watchdog limit for one continuous drag. |
 | `DRAG_COOLDOWN_MS` | Cooldown after Home, watchdog, or recalibration. |
 | `RECENTER_IDLE_MS` | Idle time before stopping drag/recenter replay. |
